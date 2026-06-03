@@ -338,6 +338,7 @@ class ODEModel(nn.Module):
                 output_bounds=(0.5, 1.5),
             )
 
+        # 设置 activity 层输入维度
         activity_fn_layers = [self.dim_activity] + [
             int(d) for d in self.config.activity_fn_layers.split(",")
         ]
@@ -459,13 +460,15 @@ class ODEModel(nn.Module):
         )
         if self.weather_fn is not None:
             weather_coefficient = self.weather_fn(weather, workout_embeddings)
+            # 后续自己加的，把torchsize = [8]拓展成 [8,1]以便后续计算
+            weather_coefficient = weather_coefficient.unsqueeze(-1)
         else:
             weather_coefficient = 1.0
 
         activity_coefficient = self.activity_fn(
             activity, workout_embeddings_tiled
         ).squeeze(-1)
-
+        
         intensity = activity_coefficient * fatigue_coefficient * weather_coefficient
         initial_heart_rate_and_demand = self.initial_heart_rate_activity_fn(
             workout_embeddings

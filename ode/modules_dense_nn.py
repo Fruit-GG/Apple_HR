@@ -12,6 +12,7 @@ import torch.nn as nn
 PersonalizationType = Literal["none", "softmax", "concatenate"]
 
 
+# 允许在输入中向它添加输入，并且在第一层进行拓展的形式的全连接神经网络
 class DenseNN(torch.nn.Module):
     def __init__(
         self,
@@ -28,6 +29,7 @@ class DenseNN(torch.nn.Module):
         # concatenate context to the input
         self.dim_layers[0] += self.dim_context
         layers = []
+        # 产生相邻层大小对，再根据这些对创建线性层
         for i, (l, r) in enumerate(zip(self.dim_layers, self.dim_layers[1:])):
             layers.append(torch.nn.Linear(l, r, bias=bias))
         self.layers = torch.nn.ModuleList(layers)
@@ -74,6 +76,7 @@ class PersonalizedScalarNN(torch.nn.Module):
                 activation=activation,
                 bias=bias,
             )
+        # 软加权，用户可以通过该层输出dim_personalization的权重，再乘以torch.softmax(context, dim=-1)进行加权求和
         elif self.personalization == "softmax":
             # add extra
             self.dense_nn = DenseNN(

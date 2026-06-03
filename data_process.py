@@ -1,10 +1,14 @@
+from datetime import datetime, timedelta
+
 import pandas as pd
 import numpy as np
 from scipy.interpolate import interp1d
 import pickle
 import warnings
 import matplotlib.pyplot as plt
-
+from ode.data import WorkoutDataset, WorkoutDatasetConfig, make_dataloaders
+from ode.ode import ODEModel, OdeConfig
+from ode.trainer import train_ode_model
 
 def load_data():
     subject_info = pd.read_csv('data/subject-info.csv')
@@ -85,7 +89,8 @@ def process_workout(group):
     对单个workout进行处理,输入的是一条workout的数据，包含多个时间点的心率数据和对应的特征信息
     1、按照时间排序 15min左右的跑步机数据， 应该在900+行
     2、插值到固定的时间点
-    3、返回处理后的数据
+    3、特殊处理：归一化心率、新建时间戳
+    4、返回处理后的数据
     """
     # 检查数据量
     if len(group) < 10:
@@ -148,6 +153,9 @@ def process_workout(group):
             raise RuntimeError(
                 f"ID_test={result['ID_test']} 在列 {col} 插值失败"
             ) from e
+    
+    # 心率归一化，统计分析显示，平均心率在 138 左右，标准差在 32 左右
+    result["heart_rate_normalized"] = ((np.array(result['HR']) - 138) / 32).tolist()  
         
     return result
 
@@ -158,6 +166,11 @@ def group_workout_data(test_measure_cleaned):
     # 创建一个新的 DataFrame 来存储每个 workout 的特征
     workout_features = []
     
+    # 用于生成顺序时间戳的计数器
+    base_time = datetime(2024, 1, 1, 0, 0, 0)   # 基准起始时间
+    workout_counter = 0
+    
+    
     # 处理所有 workouts
     skipped_count = 0
     for idx, (wid, group) in enumerate(grouped):
@@ -167,6 +180,9 @@ def group_workout_data(test_measure_cleaned):
         # 对每个 workout 进行处理
         processed = process_workout(group)
         if processed is not None:
+            # 简单为该 workout 增加一个模拟的开始时间（按处理顺序递增一天），适配DataLoader
+            processed['time_of_start_column'] = base_time + timedelta(days=workout_counter)
+            workout_counter += 1
             workout_features.append(processed)
         else:
             skipped_count += 1
@@ -262,16 +278,57 @@ def plot_interpolation_comparison(workout_df, test_id, raw_data):
     plt.savefig(f"interpolation_comparison_{test_id}.png")
     plt.show()
 
+def load_with_dataloader(workout_features):
+    
+    df = workout_features.rename(columns={
+        'time_of_start_column': 'time_start',
+        'HR': 'heart_rate'
+    })
 
+    config = WorkoutDatasetConfig()
+    config.activity_columns = ["Speed"]   
+    config.weather_columns = ["Humidity", "Temperature"]
+    config.history_max_length = 512
+    
+    total = len(df)
+    train_len = int(total * 0.8)
+    train_dataset = WorkoutDataset(df.iloc[:train_len], config)
+    test_dataset = WorkoutDataset(df.iloc[train_len:], config)
+
+
+    
+    return train_dataset, test_dataset, config, df
 
 def main():
     subject_info, test_measure = load_data()
     test_measure_with_info = process_workout_data(subject_info, test_measure)
     test_measure_cleaned = data_clean(test_measure_with_info)
     workout_features = group_workout_data(test_measure_cleaned)
-    stats_df = analyze_workout_features(workout_features)
     
+    stats_df = analyze_workout_features(workout_features)
     # plot_interpolation_comparison(workout_features, test_id='484_1', raw_data=test_measure_cleaned)
+    
+    train_dataset, test_dataset, data_config_train, df_tmp = load_with_dataloader(workout_features)
+    
+    train_dataloader, test_dataloader = make_dataloaders(train_dataset, test_dataset, batch_size=8)
+    
+    ode_config = OdeConfig(
+        data_config_train,
+        learning_rate=1e-3,
+        seed=0,
+        n_epochs=10,
+        encoder_embedding_dim=8,
+        subject_embedding_dim=4,
+    )
+
+    model = ODEModel(
+            workouts_info=df_tmp[["subject_id", "workout_id"]],
+            config=ode_config,)
+    
+    total = len(df_tmp)
+    train_len = int(total * 0.8)
+    train_workout_ids = set(df_tmp.iloc[:train_len]["workout_id"].values)
+    res = train_ode_model(model, train_dataloader, test_dataloader, train_workout_ids)
 
 if __name__ == "__main__":
     main()
